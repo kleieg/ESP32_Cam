@@ -1,0 +1,67 @@
+<!DOCTYPE HTML><html>
+<head>
+  <title>ESP SCT013</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" type="text/css" href="style.css">
+  <link rel="icon"  type="image/png" href="favicon.png">
+  <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.7.2/css/all.css" integrity="sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr" crossorigin="anonymous">
+</head>
+<body>
+  <div class="topnav">
+    <h1>ESP WEB SERVER - SCT013 sensor</h1>
+  </div>
+  <div class="content">
+    <div class="card-grid">
+        <div class="card">             
+            <p class="card-title">Hostname</p>
+            <p class ="card-text"><span id="0"></span></p>
+        </div>
+        <div class="card">             
+          <p class="card-title">MQTT last will topic</p>
+          <p class ="card-text"><span id="1"></span></p>
+        </div>
+        <div class="card">             
+          <p class="card-title">WiFi RSSI</p>
+          <p class ="card-text"><span id="2"></span></p>
+        </div>
+        <div class="card">             
+            <p class="card-title">Mqtt_sendInterval</p>
+            <p class ="card-text"><span id="3"></span></p>
+        </div>
+        <div class="card">             
+            <p class="card-title">SCT013 - raw value</p>
+            <p class ="card-text"><span id="4"></span></p>
+        </div>
+        <div class="card">
+            <p class="card-title">SCT013 - scan duration</p>
+            <p class ="card-text"><span id="5"></span></p>
+        </div>
+        <div class="card">
+            <p class="card-title">Unix timestamp</p>
+            <p class ="card-text"><span id="6"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title"> </p>
+          <p class ="card-text"><span id="7"></span></p>
+        </div>
+        <div class="card">
+          <p class="card-title">SCT_scanInterval</p>
+          <p class ="card-text"><span id="8"></span></p>
+          <input id="i8" class="card-text" type="number" min="5000" max="15000" required>
+          <button onclick="myFunction('8')">OK</button>
+          <p class ="card-text"><span id="m8">enter value 5000 to 15000</span></p>
+        </div>
+        <div class="card">
+          <p class="card-title">SCT_samples</p>
+          <p class ="card-text"><span id="9"></span></p>
+          <input id="i9" class="card-text" type="number" min="700" max="3000" required>
+          <button onclick="myFunction('9')">OK</button>
+          <p class ="card-text"><span id="m9">enter value 700 to 3000</span></p>
+        </div>
+    </div>
+  </div>
+  <script src="/script.js"></script>
+</body>
+</html>
+
+
