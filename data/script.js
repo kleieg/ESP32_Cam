@@ -51,3 +51,9 @@ function myFunction(id) {
       websocket.send(message);
     } 
   } 
+
+  function myReboot(id) {
+    console.log("Reboot");
+    var message = "{\"card\":" + id + ",\"value\":0}";
+    websocket.send(message);
+} 
