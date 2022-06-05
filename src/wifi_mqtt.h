@@ -38,10 +38,11 @@ void initWiFi() {
 // reconnect to WiFi 
 void reconnect_wifi() {
   log_i("%s\n","WiFi try reconnect"); 
-  WiFi.begin();
+  WiFi_reconnect = WiFi_reconnect + 1;
+  WiFi.disconnect();
+  WiFi.reconnect();
   delay(500);
   if (WiFi.status() == WL_CONNECTED) {
-    WiFi_reconnect = WiFi_reconnect + 1;
     // Once connected, publish an announcement...
     log_i("%s\n","WiFi reconnected"); 
   }
