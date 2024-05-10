@@ -1,340 +1,264 @@
-/*  Chnagelog
-8.2.21  UTC time eingeführt
+/*********
+  Rui Santos
+  Complete project details at https://RandomNerdTutorials.com/esp32-cam-video-streaming-web-server-camera-home-assistant/
+  
+  IMPORTANT!!! 
+   - Select Board "AI Thinker ESP32-CAM"
+   - GPIO 0 must be connected to GND to upload a sketch
+   - After connecting GPIO 0 to GND, press the ESP32-CAM on-board RESET button to put your board in flashing mode
+  
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files.
 
-10.2.21 Umgestellt von Messung Watt auf Raw-values.
-Um nur Trockner ein/aus zu erkennen ist das weniger Fehleranfällig.
-Außerdem den Meßbereich geändert:
-ADC_ATTEN_DB_6  = 0 - 2V in ADC_ATTEN_DB_2_5 = 0-1.34V
-Dazu am GPIO32 den Spannungteiler von 1:1 = 1.6 V  auf 1:3 = 0.825 V angepasst.
-Der SCT013 liefert 1V bei 30A d.h. beo 2KW = 8,6 A nur ca. 0,3V
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+*********/
 
-3.4.21 Online / Offline mit Last Wiil in MQTT eingeführt
+#include "esp_camera.h"
+#include <WiFi.h>
+#include "esp_timer.h"
+#include "img_converters.h"
+#include "Arduino.h"
+#include "fb_gfx.h"
+#include "soc/soc.h" //disable brownout problems
+#include "soc/rtc_cntl_reg.h"  //disable brownout problems
+#include "esp_http_server.h"
 
+//Replace with your network credentials
+const char* ssid = "vring";
+const char* password = "RubiFoamNet";
 
+#define PART_BOUNDARY "123456789000000000000987654321"
 
+// This project was tested with the AI Thinker Model, M5STACK PSRAM Model and M5STACK WITHOUT PSRAM
+#define CAMERA_MODEL_AI_THINKER
+//#define CAMERA_MODEL_M5STACK_PSRAM
+//#define CAMERA_MODEL_M5STACK_WITHOUT_PSRAM
 
-*/
+// Not tested with this model
+//#define CAMERA_MODEL_WROVER_KIT
 
-#include <Arduino.h>
+#if defined(CAMERA_MODEL_WROVER_KIT)
+  #define PWDN_GPIO_NUM    -1
+  #define RESET_GPIO_NUM   -1
+  #define XCLK_GPIO_NUM    21
+  #define SIOD_GPIO_NUM    26
+  #define SIOC_GPIO_NUM    27
+  
+  #define Y9_GPIO_NUM      35
+  #define Y8_GPIO_NUM      34
+  #define Y7_GPIO_NUM      39
+  #define Y6_GPIO_NUM      36
+  #define Y5_GPIO_NUM      19
+  #define Y4_GPIO_NUM      18
+  #define Y3_GPIO_NUM       5
+  #define Y2_GPIO_NUM       4
+  #define VSYNC_GPIO_NUM   25
+  #define HREF_GPIO_NUM    23
+  #define PCLK_GPIO_NUM    22
 
-#include <driver/adc.h>
+#elif defined(CAMERA_MODEL_M5STACK_PSRAM)
+  #define PWDN_GPIO_NUM     -1
+  #define RESET_GPIO_NUM    15
+  #define XCLK_GPIO_NUM     27
+  #define SIOD_GPIO_NUM     25
+  #define SIOC_GPIO_NUM     23
+  
+  #define Y9_GPIO_NUM       19
+  #define Y8_GPIO_NUM       36
+  #define Y7_GPIO_NUM       18
+  #define Y6_GPIO_NUM       39
+  #define Y5_GPIO_NUM        5
+  #define Y4_GPIO_NUM       34
+  #define Y3_GPIO_NUM       35
+  #define Y2_GPIO_NUM       32
+  #define VSYNC_GPIO_NUM    22
+  #define HREF_GPIO_NUM     26
+  #define PCLK_GPIO_NUM     21
 
+#elif defined(CAMERA_MODEL_M5STACK_WITHOUT_PSRAM)
+  #define PWDN_GPIO_NUM     -1
+  #define RESET_GPIO_NUM    15
+  #define XCLK_GPIO_NUM     27
+  #define SIOD_GPIO_NUM     25
+  #define SIOC_GPIO_NUM     23
+  
+  #define Y9_GPIO_NUM       19
+  #define Y8_GPIO_NUM       36
+  #define Y7_GPIO_NUM       18
+  #define Y6_GPIO_NUM       39
+  #define Y5_GPIO_NUM        5
+  #define Y4_GPIO_NUM       34
+  #define Y3_GPIO_NUM       35
+  #define Y2_GPIO_NUM       17
+  #define VSYNC_GPIO_NUM    22
+  #define HREF_GPIO_NUM     26
+  #define PCLK_GPIO_NUM     21
 
-#include <esp_system.h>
-#include <string>
-#include <AsyncTCP.h>
-#include <ESPAsyncWebServer.h>
-#include "SPIFFS.h"
-#include <Arduino_JSON.h>
-#include <AsyncElegantOTA.h>
-#include <NTPClient.h>
-#include <WiFiUdp.h>
+#elif defined(CAMERA_MODEL_AI_THINKER)
+  #define PWDN_GPIO_NUM     32
+  #define RESET_GPIO_NUM    -1
+  #define XCLK_GPIO_NUM      0
+  #define SIOD_GPIO_NUM     26
+  #define SIOC_GPIO_NUM     27
+  
+  #define Y9_GPIO_NUM       35
+  #define Y8_GPIO_NUM       34
+  #define Y7_GPIO_NUM       39
+  #define Y6_GPIO_NUM       36
+  #define Y5_GPIO_NUM       21
+  #define Y4_GPIO_NUM       19
+  #define Y3_GPIO_NUM       18
+  #define Y2_GPIO_NUM        5
+  #define VSYNC_GPIO_NUM    25
+  #define HREF_GPIO_NUM     23
+  #define PCLK_GPIO_NUM     22
+#else
+  #error "Camera model not selected"
+#endif
 
-#include "WLAN_Credentials.h"
-#include "config.h"
-#include "wifi_mqtt.h"
+static const char* _STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
+static const char* _STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
+static const char* _STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
+httpd_handle_t stream_httpd = NULL;
 
+static esp_err_t stream_handler(httpd_req_t *req){
+  camera_fb_t * fb = NULL;
+  esp_err_t res = ESP_OK;
+  size_t _jpg_buf_len = 0;
+  uint8_t * _jpg_buf = NULL;
+  char * part_buf[64];
 
-// NTP
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP);
-long My_time = 0;
-long Start_time;
-long Up_time;
-long U_days;
-long U_hours;
-long U_min;
-long U_sec;
-
-                      
-
-// Timers auxiliar variables
-long now = millis();
-char strtime[8];
-int LEDblink = 0;
-bool led = 1;
-
-
-
-// define SCT stuff
-int SCT_samples = 1900;         // ca. 100 msec = 5 50Hz Perioden
-int SCT_scanInterval = 10000;   //In milliseconds
-long SCT_lastScan = 0;
-int SCT_raw = 1;
-long  SCT_time =0;
-long  SCT_duration;     
-
-// Create AsyncWebServer object on port 80
-AsyncWebServer Asynserver(80);
-
-// Create a WebSocket object
-AsyncWebSocket ws("/ws");
-
-// end of definitions -----------------------------------------------------
-
-// Initialize SPIFFS
-void initSPIFFS() {
-  if (!SPIFFS.begin()) {
-    // Serial.println("An error has occurred while mounting LittleFS");
+  res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
+  if(res != ESP_OK){
+    return res;
   }
-  // Serial.println("LittleFS mounted successfully");
-}
 
-String getOutputStates(){
-  JSONVar myArray;
-
-  U_days = Up_time / 86400;
-  U_hours = (Up_time % 86400) / 3600;
-  U_min = (Up_time % 3600) / 60;
-  U_sec = (Up_time % 60);
-
-  myArray["cards"][0]["c_text"] = Hostname;
-  myArray["cards"][1]["c_text"] = WiFi.dnsIP().toString() + "   /   " + String(VERSION);
-  myArray["cards"][2]["c_text"] = String(WiFi.RSSI());
-  myArray["cards"][3]["c_text"] = String(MQTT_INTERVAL) + "ms";
-  myArray["cards"][4]["c_text"] = String(U_days) + " days " + String(U_hours) + ":" + String(U_min) + ":" + String(U_sec);
-  myArray["cards"][5]["c_text"] = "WiFi = " + String(WiFi_reconnect) + "   MQTT = " + String(Mqtt_reconnect);
-  myArray["cards"][6]["c_text"] = String(SCT_raw);
-  myArray["cards"][7]["c_text"] = " to reboot click ok";
-  
-  myArray["cards"][8]["c_text"] = String(SCT_scanInterval) + "ms";
-  myArray["cards"][9]["c_text"] = String(SCT_samples);
-  
-  String jsonString = JSON.stringify(myArray);
-  return jsonString;
-}
-
-void notifyClients(String state) {
-  ws.textAll(state);
-}
-
-void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
-    AwsFrameInfo *info = (AwsFrameInfo*)arg;
-  if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
-    data[len] = 0;
-    char help[30];
-    int card;
-    int value;
-    
-    for (int i = 0; i <= len; i++){
-      help[i] = data[i];
+  while(true){
+    fb = esp_camera_fb_get();
+    if (!fb) {
+      Serial.println("Camera capture failed");
+      res = ESP_FAIL;
+    } else {
+      if(fb->width > 400){
+        if(fb->format != PIXFORMAT_JPEG){
+          bool jpeg_converted = frame2jpg(fb, 80, &_jpg_buf, &_jpg_buf_len);
+          esp_camera_fb_return(fb);
+          fb = NULL;
+          if(!jpeg_converted){
+            Serial.println("JPEG compression failed");
+            res = ESP_FAIL;
+          }
+        } else {
+          _jpg_buf_len = fb->len;
+          _jpg_buf = fb->buf;
+        }
+      }
     }
-
-    log_i("Data received: ");
-    log_i("%s\n",help);
-
-    JSONVar myObject = JSON.parse(help);
-
-    card =  myObject["card"];
-    value =  myObject["value"];
-    log_i("%d", card);
-    log_i("%d",value);
-
-    switch (card) {
-      case 0:   // fresh connection
-        notifyClients(getOutputStates());
-        break;
-      case 7:
-        log_i("Reset..");
-        ESP.restart();
-        break;
-      case 8:
-        SCT_scanInterval = value;
-        notifyClients(getOutputStates());
-        break;
-      case 9:
-        SCT_samples = value;
-        notifyClients(getOutputStates());
-        break;
+    if(res == ESP_OK){
+      size_t hlen = snprintf((char *)part_buf, 64, _STREAM_PART, _jpg_buf_len);
+      res = httpd_resp_send_chunk(req, (const char *)part_buf, hlen);
     }
+    if(res == ESP_OK){
+      res = httpd_resp_send_chunk(req, (const char *)_jpg_buf, _jpg_buf_len);
+    }
+    if(res == ESP_OK){
+      res = httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY));
+    }
+    if(fb){
+      esp_camera_fb_return(fb);
+      fb = NULL;
+      _jpg_buf = NULL;
+    } else if(_jpg_buf){
+      free(_jpg_buf);
+      _jpg_buf = NULL;
+    }
+    if(res != ESP_OK){
+      break;
+    }
+    //Serial.printf("MJPG: %uB\n",(uint32_t)(_jpg_buf_len));
+  }
+  return res;
+}
+
+void startCameraServer(){
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.server_port = 80;
+
+  httpd_uri_t index_uri = {
+    .uri       = "/",
+    .method    = HTTP_GET,
+    .handler   = stream_handler,
+    .user_ctx  = NULL
+  };
+  
+  //Serial.printf("Starting web server on port: '%d'\n", config.server_port);
+  if (httpd_start(&stream_httpd, &config) == ESP_OK) {
+    httpd_register_uri_handler(stream_httpd, &index_uri);
   }
 }
 
-void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client,AwsEventType type,
-             void *arg, uint8_t *data, size_t len) {
-  switch (type) {
-    case WS_EVT_CONNECT:
-      log_i("WebSocket client connected");
-      break;
-    case WS_EVT_DISCONNECT:
-      log_i("WebSocket client disconnected");
-      break;
-    case WS_EVT_DATA:
-      handleWebSocketMessage(arg, data, len);
-      break;
-    case WS_EVT_PONG:
-    case WS_EVT_ERROR:
-      break;
-  }
-}
-
-//  function for SCT scan
-void SCT_scan () {
-  
-  int val;
-  double sum = 0;  
-  double raw;
-
-  //  start scan
-  log_i("start SCT scan!");
-  
-  SCT_duration  = millis();
-
-  for (int i = 0; i < SCT_samples; i++) {
-
-      val = adc1_get_raw(ADC1_CHANNEL_4) - 2125;    // 2125 ist Mittelwert bei 0 sct_raw vom SCT13
-      sum = sum + (val * val);
-  }
-
-  SCT_duration = millis() - SCT_duration ;
-  log_i("scan duration: %d",SCT_duration );
-
-  raw = sum / SCT_samples;
-  raw = sqrt(raw);
-  log_i("raw value= %.5f",raw);
-
-  SCT_raw = raw;
-
-  notifyClients(getOutputStates());
-}
-
-
-void MQTTsend () {
-  JSONVar mqtt_data; 
-
-  String mqtt_tag = Hostname + "/STATUS";
-  log_i("%s\n", mqtt_tag.c_str());
-  
-  mqtt_data["Time"] = My_time;
-  mqtt_data["RSSI"] = WiFi.RSSI();
-  mqtt_data["Raw_value"] =SCT_raw;
-
-  String mqtt_string = JSON.stringify(mqtt_data);
-
-  log_i("%s\n", mqtt_string.c_str());
-
-  Mqttclient.publish(mqtt_tag.c_str(), mqtt_string.c_str());
-
-  notifyClients(getOutputStates());
-}
-
-// setup 
 void setup() {
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); //disable brownout detector
+ 
+  Serial.begin(115200);
+  Serial.setDebugOutput(false);
   
-  SERIALINIT                                 
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = Y2_GPIO_NUM;
+  config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM;
+  config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM;
+  config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM;
+  config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk = XCLK_GPIO_NUM;
+  config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM;
+  config.pin_href = HREF_GPIO_NUM;
+  config.pin_sscb_sda = SIOD_GPIO_NUM;
+  config.pin_sscb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM;
+  config.pin_reset = RESET_GPIO_NUM;
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG; 
   
-  log_i("setup device\n");
-
-  pinMode(GPIO_LED, OUTPUT);
-  digitalWrite(GPIO_LED,led);
-
-  log_i("setup WiFi\n");
-  initWiFi();
-
-  log_i("setup MQTT\n");
-  Mqttclient.setServer(MQTT_BROKER, 1883);
-
-// ADC1_CHANNEL_4  = GPIO32
-// ADC_ATTEN_DB_6  = Meßbereich up to approx. 1350 mV.
-/*
-By default, the allowable input range is 0-1V but with different attenuations we can scale the input sct_rawage into this range. 
-The available scales beyond the 0-1V include 0-1.34V, 0-2V and 0-3.6V.
-   ADC_ATTEN_DB_0    
-    ADC_ATTEN_DB_2_5 
-    ADC_ATTEN_DB_6    
-    ADC_ATTEN_DB_11  
-    ADC_ATTEN_MAX,
-
-*/
-
-  log_i("setup ADC1\n");
-  adc1_config_width(ADC_WIDTH_BIT_12);
-  adc1_config_channel_atten(ADC1_CHANNEL_4,ADC_ATTEN_DB_2_5);
-
-  initSPIFFS();
+  if(psramFound()){
+    config.frame_size = FRAMESIZE_UXGA;
+    config.jpeg_quality = 10;
+    config.fb_count = 2;
+  } else {
+    config.frame_size = FRAMESIZE_SVGA;
+    config.jpeg_quality = 12;
+    config.fb_count = 1;
+  }
   
-  // init Websocket
-  ws.onEvent(onEvent);
-  Asynserver.addHandler(&ws);
-
-  // Route for root / web page
-  Asynserver.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(SPIFFS, "/index.html", "text/html",false);
-  });
-
-  Asynserver.serveStatic("/", SPIFFS, "/");
-
-  timeClient.begin();
-  timeClient.setTimeOffset(0);
-  // update UPCtime for Starttime
-  timeClient.update();
-  Start_time = timeClient.getEpochTime();
-
-  // Start ElegantOTA
-  AsyncElegantOTA.begin(&Asynserver);
+  // Camera init
+  esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK) {
+    Serial.printf("Camera init failed with error 0x%x", err);
+    return;
+  }
+  // Wi-Fi connection
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("");
+  Serial.println("WiFi connected");
   
-  // Start server
-  Asynserver.begin();
-
+  Serial.print("Camera Stream Ready! Go to: http://");
+  Serial.print(WiFi.localIP());
+  
+  // Start streaming web server
+  startCameraServer();
 }
 
 void loop() {
-
-  ws.cleanupClients();
-
-  // update UPCtime
-  timeClient.update();
-  My_time = timeClient.getEpochTime();
-  Up_time = My_time - Start_time;
-
-  now = millis();
-
-  // LED blinken
-  if (now - LEDblink > 2000) {
-    LEDblink = now;
-    if(led == 0) {
-      digitalWrite(GPIO_LED, 1);
-      led = 1;
-    }else{
-      digitalWrite(GPIO_LED, 0);
-      led = 0;
-    }
-  }
-
-  // perform SCT scan
-  if (now - SCT_lastScan > SCT_scanInterval) {
-    SCT_lastScan = now;
-    SCT_scan();
-  } 
-
-  // check WiFi
-  if (WiFi.status() != WL_CONNECTED  ) {
-    // try reconnect every 5 seconds
-    if (now - lastReconnectAttempt > 5000) {
-      lastReconnectAttempt = now;              // prevents mqtt reconnect running also
-      // Attempt to reconnect
-      reconnect_wifi();
-    }
-  }
-
-  // check if MQTT broker is still connected
-  if (!Mqttclient.connected()) {
-    // try reconnect every 5 seconds
-    if (now - lastReconnectAttempt > 5000) {
-      lastReconnectAttempt = now;
-      // Attempt to reconnect
-      reconnect_mqtt();
-    }
-  } else {
-    // Client connected
-
-    Mqttclient.loop();
-
-    // send data to MQTT broker
-    if (now - Mqtt_lastSend > MQTT_INTERVAL) {
-    Mqtt_lastSend = now;
-    MQTTsend();
-    } 
-  }   
+  delay(1);
 }
